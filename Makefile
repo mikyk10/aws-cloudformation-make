@@ -41,7 +41,7 @@ init:
 
 check-prerequisites: init
 	@which jq > /dev/null || (echo '`jq` is not installed' && exit 1;)
-	@(ls src/*.yaml 2> /dev/null) || (echo 'No templates found on src/' && exit 1;)
+	@(ls src/*.yaml > /dev/null 2>&1) || (echo 'No templates found on src/' && exit 1;)
 	@if [ -z "${STACK}" ]; then echo 'STACK={stack name} is not set'; echo; echo -e "Available stacks:\n==="; (for f in $$(ls src/*.yaml);do x=$${f#src/}; echo $${x%.yaml};done); echo; exit 1; fi
 
 clean:
