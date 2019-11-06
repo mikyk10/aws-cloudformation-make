@@ -1,31 +1,47 @@
+# Copyright 2019 Mitsutaka Naito
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 SHELL := /bin/bash
-.DEFAULT_GOAL :=
+.DEFAULT_GOAL := check-prerequisites
 .PHONY : create update changeset delete delete-failed selfupdate src/%.mo.yaml
 
 ENV := dev
-PROJECT := default
-
-include makefile.${ENV}
-
 TIMESTAMP := $(shell date +'%Y%m%d-%H%M%S')
-STACKPART := $(shell echo '${STACK}' | sed -e 's/^[0-9]*-//g')
-STACKNAME := ${ENV}-${PROJECT}-${STACKPART}
-CLI = aws --profile ${AWS_PROFILE}
 
 build: clean $(addprefix run/,$(wildcard src/*.yaml))
-init:
-	[ ! -d .cache ] && mkdir .cache ||:
-	[ ! -d bin ] && mkdir bin ||:
-	[ ! -d src ] && mkdir src ||:
-	[ ! -d dist ] && mkdir dist ||:
-	[ ! -f bin/mo ] && curl -sSL https://git.io/get-mo -o bin/mo && chmod +x bin/mo ||:
-	echo ".gitignore/\ndist/\nbin/" > .gitignore 
 
 _set-aws-profile:
 	$(eval AWS_PROFILE = $(shell if [ ! -z "${AWS_PROFILE}" ]; then echo "${AWS_PROFILE}";else read -e -p 'AWS profile name [${AWS_DEFAULT_PROFILE}]: '; ([[ ! -z "$${REPLY}" ]] && echo $${REPLY} || echo ${AWS_DEFAULT_PROFILE});fi))
+	$(eval CLI = aws --profile ${AWS_PROFILE})
 
-check-prerequisites:
-	@which jq > /dev/null || (echo '`jq` is not installed')
+init:
+	@[ ! -d .cache ] && mkdir .cache ||:
+	@[ ! -d bin ] && mkdir bin ||:
+	@[ ! -d src ] && mkdir src ||:
+	@[ ! -d dist ] && mkdir dist ||:
+	@[ ! -f bin/mo ] && curl -sSL https://git.io/get-mo -o bin/mo && chmod +x bin/mo ||:
+	@[ ! -e .gitignore ] && echo ".gitignore/\ndist/\nbin/" > .gitignore ||:
+	@[ ! -e project ] && echo -e 'PROJECT := default\nSTACKNAME := $${ENV}-$${PROJECT}-$${STACKPART}' > project ||:
+	
+	$(eval STACKPART := $(shell echo '${STACK}' | sed -e 's/^[0-9]*-//g'))
+	$(eval include project)
+	$(eval -include makefile.${ENV})
+	
+
+check-prerequisites: init
+	@which jq > /dev/null || (echo '`jq` is not installed' && exit 1;)
+	@(ls src/*.yaml 2> /dev/null) || (echo 'No templates found on src/' && exit 1;)
 	@if [ -z "${STACK}" ]; then echo 'STACK={stack name} is not set'; echo; echo -e "Available stacks:\n==="; (for f in $$(ls src/*.yaml);do x=$${f#src/}; echo $${x%.yaml};done); echo; exit 1; fi
 
 clean:
