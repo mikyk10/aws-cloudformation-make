@@ -18,6 +18,7 @@ SHELL := /bin/bash
 
 ENV := dev
 TIMESTAMP := $(shell date +'%Y%m%d-%H%M%S')
+CFNEXPORT_PACKAGES3BUCKET := CFNPACKAGES3BUCKET
 
 init:
 	@[ ! -d .cache ] && mkdir .cache ||:
@@ -34,17 +35,26 @@ clean:
 	rm -rf .cache/*
 	rm -rf dist/*
 	
-delete-failed: _set-aws-profile
-	$(foreach stack, $(shell ${CLI} cloudformation list-stacks | jq -r '.StackSummaries[] | select(.StackStatus == "CREATE_FAILED" or .StackStatus == "ROLLBACK_IN_PROGRESS" or .StackStatus == "ROLLBACK_COMPLETE") | .StackName'), ${CLI} cloudformation delete-stack --stack-name $(stack) )
-
 create: _check-prerequisites clean _set-aws-profile delete-failed dist/${STACK}.yaml dist/${STACK}.config.json
-	${CLI} cloudformation create-stack --template-body file://dist/${STACK}.yaml --cli-input-json file://dist/${STACK}.config.json
+	$(call exec_create)
 
 update: _check-prerequisites clean _set-aws-profile dist/${STACK}.yaml dist/${STACK}.config.json
-	${CLI} cloudformation update-stack --template-body file://dist/${STACK}.yaml --cli-input-json file://dist/${STACK}.config.json
+	$(call exec_update)
 
 changeset: _check-prerequisites clean _set-aws-profile dist/${STACK}.yaml dist/${STACK}.config.json
-	${CLI} cloudformation create-change-set --template-body file://dist/${STACK}.yaml --change-set-name=cs-${TIMESTAMP} --cli-input-json file://dist/${STACK}.config.json
+	$(call exec_changeset)
+
+package-create: _packaging
+	$(call exec_create)
+
+package-update: _packaging
+	$(call exec_update)
+
+package-changeset: _packaging
+	$(call exec_changeset)
+
+delete-failed: _set-aws-profile
+	$(foreach stack, $(shell ${CLI} cloudformation list-stacks | jq -r '.StackSummaries[] | select(.StackStatus == "CREATE_FAILED" or .StackStatus == "ROLLBACK_IN_PROGRESS" or .StackStatus == "ROLLBACK_COMPLETE") | .StackName'), ${CLI} cloudformation delete-stack --stack-name $(stack) )
 
 delete: _check-prerequisites clean _set-aws-profile
 	${CLI} cloudformation delete-stack --stack-name ${STACKNAME}
@@ -64,16 +74,24 @@ run/src/%.yaml dist/%.yaml: .cache/vars
 run/src/%.config.json dist/%.config.json: dist/${STACK}.yaml
 	jq -n '{}|.StackName="${STACKNAME}"|.Parameters=[{ParameterKey:"ENV",ParameterValue:"${ENV}"}, {ParameterKey:"ServiceName",ParameterValue:"${ENV}-${PROJECT}"}]|.Tags=[{Key:"ENV",Value:"${ENV}"},{Key:"PROJECT",Value:"${PROJECT}"}]' | \
 	jq -s '.[0] * .[1]' <( [ -f stack-config.json ] && cat stack-config.json || echo '{}') - | \
-	jq -s 'if(.[0].Parameters?) then .[1].Parameters=[.[].Parameters[]] else . end|if(.[0].Tags?) then .[1].Tags=[.[].Tags[]] else . end|.[0] * .[1]' <( [ -f src/${STACK}.config.json ] && cat src/${STACK}.config.json || echo '{}') - | jq -s '.[0] * .[1]' - <(${CLI} cloudformation validate-template --template-body file://dist/${STACK}.yaml | jq '{Capabilities}|del(.Capabilities|nulls)') > dist/${STACK}.config.json
+	jq -s 'if(.[0].Parameters?) then .[1].Parameters=[.[].Parameters[]] else . end|if(.[0].Tags?) then .[1].Tags=[.[].Tags[]] else . end|.[0] * .[1]' <( [ -f src/${STACK}.config.json ] && cat src/${STACK}.config.json || echo '{}') - | jq -s '.[0] * .[1]' - <(${CLI} cloudformation validate-template --template-body file://dist/${STACK}.yaml | jq '.Capabilities += ["CAPABILITY_AUTO_EXPAND", "CAPABILITY_IAM"]|{Capabilities}') > dist/${STACK}.config.json
 
-define update_lambda
-	$(eval APP := $(notdir $1))
-	(pushd $1 && rm -f ../../../dist/${APP}.zip && zip -r ../../../dist/${APP}.zip . ) && ${CLI} lambda update-function-code --function-name ${APP} --zip-file fileb://dist/${APP}.zip
+define exec_create
+	${CLI} cloudformation create-stack --template-body file://dist/${STACK}.yaml --cli-input-json file://dist/${STACK}.config.json
 endef
 
-update-lambda: _set-aws-profile
-	$(foreach func,$(wildcard src/lambda/*),$(call update_lambda,$(func)))
-	
+define exec_update
+	${CLI} cloudformation update-stack --template-body file://dist/${STACK}.yaml --cli-input-json file://dist/${STACK}.config.json
+endef
+
+define exec_changeset
+	${CLI} cloudformation create-change-set --template-body file://dist/${STACK}.yaml --change-set-name=cs-${TIMESTAMP} --cli-input-json file://dist/${STACK}.config.json
+endef
+
+_packaging: _check-prerequisites clean _set-aws-profile dist/${STACK}.yaml dist/${STACK}.config.json
+	$(eval PACKAGES3BUCKET := $(shell ${CLI} cloudformation list-exports | jq -r '.Exports[]|select(.Name|test("${ENV}-${PROJECT}-${CFNEXPORT_PACKAGES3BUCKET}"))|.Value'))
+	@$(shell if [ -z "${PACKAGES3BUCKET}" ];then echo 'echo S3 Bucket is missing.;exit 1';fi)
+	${CLI} cloudformation package --template-file dist/${STACK}.yaml --s3-bucket ${PACKAGES3BUCKET} --output-template-file dist/${STACK}.yaml --force-upload
 
 _load-config:
 	$(eval include project)
