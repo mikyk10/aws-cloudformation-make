@@ -1,0 +1,18 @@
+{
+    "DisableRollback": false,
+    "RollbackConfiguration": {
+        "RollbackTriggers": [], 
+        "MonitoringTimeInMinutes": 0
+    }, 
+    "TimeoutInMinutes": 0, 
+    "NotificationARNs": [], 
+    "Capabilities": [], 
+    "ResourceTypes": [], 
+    "RoleARN": "", 
+    "OnFailure": "DELETE", 
+    "StackPolicyBody": "", 
+    "StackPolicyURL": "", 
+    "ClientRequestToken": "", 
+    "EnableTerminationProtection": false
+}
+
