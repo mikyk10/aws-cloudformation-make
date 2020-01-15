@@ -29,7 +29,7 @@ init:
 	@[ ! -e .gitignore ] && echo ".gitignore/\ndist/\nbin/" > .gitignore ||:
 	@[ ! -e project ] && echo -e 'PROJECT := default\nSTACKNAME = $${ENV}-$${PROJECT}-$${STACKPART}\nAWS_DEFAULT_PROFILE :=' > project ||:
 
-build: clean $(addprefix run/,$(wildcard src/*.yaml))
+build: clean _check-prerequisites $(addprefix run/,$(wildcard src/*.yaml))
 
 clean:
 	rm -rf .cache/*
@@ -44,7 +44,7 @@ update: _check-prerequisites clean _set-aws-profile dist/${STACK}.yaml dist/${ST
 changeset: _check-prerequisites clean _set-aws-profile dist/${STACK}.yaml dist/${STACK}.config.json
 	$(call exec_changeset)
 
-package-create: _packaging
+package-create: delete-failed _packaging
 	$(call exec_create)
 
 package-update: _packaging
@@ -55,6 +55,7 @@ package-changeset: _packaging
 
 delete-failed: _set-aws-profile
 	$(foreach stack, $(shell ${CLI} cloudformation list-stacks | jq -r '.StackSummaries[] | select(.StackStatus == "CREATE_FAILED" or .StackStatus == "ROLLBACK_IN_PROGRESS" or .StackStatus == "ROLLBACK_COMPLETE") | .StackName'), ${CLI} cloudformation delete-stack --stack-name $(stack) )
+	sleep 3
 
 delete: _check-prerequisites clean _set-aws-profile
 	${CLI} cloudformation delete-stack --stack-name ${STACKNAME}
@@ -66,15 +67,20 @@ selfupdate:
 	curl -o Makefile https://raw.githubusercontent.com/mnaito/aws-cloudformation-make/master/Makefile
 
 run/src/%.yaml dist/%.yaml: .cache/vars
-	./bin/mo src/$(notdir $@) --source=.cache/vars | sed -e 's/<<<</{{/g' | sed -e 's/>>>>/}}/g' > dist/$(notdir $@)
+	./bin/mo src/$(notdir $@) --allow-function-arguments --source=.cache/vars | sed -e 's/<<<</{{/g' | sed -e 's/>>>>/}}/g' > dist/$(notdir $@)
 
 .cache/vars:
-	cat src/source.vars src/source.vars.${ENV} > .cache/vars ||:
+	echo -e "export AWS_PROFILE=${AWS_PROFILE}\nexport ENV=${ENV}\nexport PROJECT=${PROJECT}\nexport SERVICE=${ENV}-${PROJECT}\n" > .cache/vars ||:
+	cat src/source.vars >> .cache/vars ||:
+	echo >> .cache/vars ||:
+	cat src/source.vars.${ENV} >> .cache/vars ||:
 
 run/src/%.config.json dist/%.config.json: dist/${STACK}.yaml
-	jq -n '{}|.StackName="${STACKNAME}"|.Parameters=[{ParameterKey:"ENV",ParameterValue:"${ENV}"}, {ParameterKey:"ServiceName",ParameterValue:"${ENV}-${PROJECT}"}]|.Tags=[{Key:"ENV",Value:"${ENV}"},{Key:"PROJECT",Value:"${PROJECT}"}]' | \
+	jq -n '{}|.StackName="${STACKNAME}"|.Tags=[{Key:"ENV",Value:"${ENV}"},{Key:"PROJECT",Value:"${PROJECT}"}]' | \
 	jq -s '.[0] * .[1]' <( [ -f stack-config.json ] && cat stack-config.json || echo '{}') - | \
-	jq -s 'if(.[0].Parameters?) then .[1].Parameters=[.[].Parameters[]] else . end|if(.[0].Tags?) then .[1].Tags=[.[].Tags[]] else . end|.[0] * .[1]' <( [ -f src/${STACK}.config.json ] && cat src/${STACK}.config.json || echo '{}') - | jq -s '.[0] * .[1]' - <(${CLI} cloudformation validate-template --template-body file://dist/${STACK}.yaml | jq '.Capabilities += ["CAPABILITY_AUTO_EXPAND", "CAPABILITY_IAM"]|{Capabilities}') > dist/${STACK}.config.json
+	jq -s 'if(.[0].Parameters?) then .[1].Parameters=[.[0].Parameters[]] else . end|if(.[0].Tags?) then .[1].Tags=[.[0].Tags[]] else . end|.[0] * .[1]' <( [ -f src/${STACK}.config.json ] && cat src/${STACK}.config.json || echo '{}') - | \
+	jq -s '.[0] * .[1]' - <(${CLI} cloudformation validate-template --template-body file://dist/${STACK}.yaml | \
+	jq '.Capabilities += ["CAPABILITY_AUTO_EXPAND", "CAPABILITY_IAM"]|{Capabilities}') > dist/${STACK}.config.json
 
 define exec_create
 	${CLI} cloudformation create-stack --template-body file://dist/${STACK}.yaml --cli-input-json file://dist/${STACK}.config.json
